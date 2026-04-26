@@ -1,0 +1,93 @@
+# Project Automation Makefile
+# Common development tasks automated
+
+.PHONY: help install dev test lint format build deploy clean
+
+PYTHON := python3
+PIP := pip
+DOCKER := docker
+COMPOSE := docker compose
+
+# Default
+help: ## Show this help message
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+# === Development ===
+
+install: ## Install production dependencies
+	$(PIP) install -r requirements.txt
+
+dev: ## Install dev dependencies and pre-commit hooks
+	$(PIP) install -r requirements.txt -r requirements-dev.txt
+	pre-commit install
+
+test: ## Run tests with coverage
+	pytest tests/ -v --cov=src --cov-report=html --cov-fail-under=80
+	@echo "Coverage report: htmlcov/index.html"
+
+test-watch: ## Run tests in watch mode
+	ptw -- tests/ -v
+
+lint: ## Run all linters
+	ruff check src/ tests/
+	mypy src/ --strict
+	@echo "All linting passed!"
+
+format: ## Format code
+	ruff format src/ tests/
+	ruff check --fix src/ tests/
+
+# === Docker ===
+
+build: ## Build Docker image
+	$(DOCKER) build -t myapp:latest .
+	$(DOCKER) build -t myapp:$$(git rev-parse --short HEAD) .
+
+up: ## Start development stack
+	$(COMPOSE) up -d
+	@echo "Stack is up. API: http://localhost:8000"
+
+down: ## Stop development stack
+	$(COMPOSE) down
+
+logs: ## Tail logs from all services
+	$(COMPOSE) logs -f --tail=50
+
+# === Database ===
+
+db-migrate: ## Run database migrations
+	alembic upgrade head
+
+db-rollback: ## Rollback last migration
+	alembic downgrade -1
+
+db-seed: ## Seed database with test data
+	$(PYTHON) scripts/seed_db.py
+
+db-reset: ## Reset database (destructive!)
+	@echo "WARNING: This will destroy all data!"
+	@read -p "Continue? [y/N] " confirm && [ $$confirm = y ]
+	$(COMPOSE) exec postgres psql -U dev -d appdb -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+	alembic upgrade head
+	$(PYTHON) scripts/seed_db.py
+
+# === Deploy ===
+
+deploy-staging: ## Deploy to staging
+	@echo "Deploying to staging..."
+	kubectl config use-context staging
+	helm upgrade --install myapp charts/myapp -f values/staging.yaml
+
+deploy-prod: ## Deploy to production
+	@echo "Deploying to production..."
+	@read -p "Confirm production deploy? [y/N] " confirm && [ $$confirm = y ]
+	kubectl config use-context production
+	helm upgrade --install myapp charts/myapp -f values/production.yaml
+
+# === Cleanup ===
+
+clean: ## Clean generated files
+	rm -rf __pycache__ .pytest_cache .mypy_cache htmlcov .coverage
+	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	@echo "Cleaned!"
