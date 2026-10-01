@@ -1,0 +1,86 @@
+# Prometheus Alerting Rules
+# Production monitoring and SLO-based alerts
+
+groups:
+  - name: application_alerts
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "High 5xx error rate ({{ $value | humanizePercentage }})"
+          description: "Error rate exceeds 5% for the last 5 minutes."
+          runbook_url: "https://wiki.internal/runbooks/high-error-rate"
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 2.0
+        for: 10m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "P99 latency above 2s ({{ $value | humanizeDuration }})"
+
+      - alert: PodCrashLooping
+        expr: |
+          rate(kube_pod_container_status_restarts_total[15m]) * 60 * 15 > 3
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+
+  - name: infrastructure_alerts
+    rules:
+      - alert: NodeHighCPU
+        expr: |
+          100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.instance }} CPU > 85% for 15m"
+
+      - alert: DiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
+          / node_filesystem_size_bytes) * 100 < 15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space < 15% on {{ $labels.instance }}:{{ $labels.mountpoint }}"
+
+      - alert: NodeMemoryPressure
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Memory usage > 90% on {{ $labels.instance }}"
+
+  - name: slo_alerts
+    rules:
+      - alert: SLOBudgetBurning
+        expr: |
+          1 - (
+            sum(rate(http_requests_total{status!~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total[1h]))
+          ) > (1 - 0.999) * 14.4
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SLO error budget burning too fast (14.4x normal rate)"
